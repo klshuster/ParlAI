@@ -179,9 +179,7 @@ class TransresnetAgent(TorchRankerAgent):
 
     def score_candidates(self, batch, cand_vecs, cands_type='batch'):
         """Given a batch and candidate set, return scores for ranking"""
-        query_vecs = self.model(batch)
-        scores = self.model.get_scores(query_vecs, cand_vecs, cands_type=cands_type)
-        return scores
+        return self.model(batch, cand_vecs, cands_type=cands_type)
 
     def train_step(self, batch):
         """
@@ -195,16 +193,19 @@ class TransresnetAgent(TorchRankerAgent):
 
         cands, cand_vecs, label_inds = self._build_candidates(
             batch, source=self.opt['candidates'], mode='train')
-        scores = self.score_candidates(batch, cand_vecs, cands_type=self.opt['candidates'])
+        scores = self.score_candidates(
+            batch,
+            cand_vecs,
+            cands_type=self.opt['candidates']
+        )
         loss = self.rank_loss(scores, label_inds)
-
 
         # Update metrics (this is where it differs from Torch Ranker)
         _, ranks = scores.sort(1, descending=True)
-        nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 1
+        nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
                     for b in range(batchsize))
         self.update_metrics(loss, nb_ok, batchsize, batch.dialog_round, None)
-
+        del nb_ok
         loss.backward()
         self.update_params()
 
@@ -217,7 +218,7 @@ class TransresnetAgent(TorchRankerAgent):
 
     def eval_step(self, batch):
         """
-            Copying nearly direclty from torch ranker agent, modifying to
+            Copying nearly directly from torch ranker agent, modifying to
             keep track of metrics across rounds
         """
         if batch.text_vec is None:
@@ -228,7 +229,11 @@ class TransresnetAgent(TorchRankerAgent):
         cands, cand_vecs, label_inds = self._build_candidates(
             batch, source=self.opt['eval_candidates'], mode='eval')
 
-        scores = self.score_candidates(batch, cand_vecs, cands_type=self.opt['eval_candidates'])
+        scores = self.score_candidates(
+            batch,
+            cand_vecs,
+            cands_type=self.opt['eval_candidates']
+        )
         _, ranks = scores.sort(1, descending=True)
 
         # Update metrics
@@ -237,9 +242,6 @@ class TransresnetAgent(TorchRankerAgent):
             nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 1
                         for b in range(batchsize))
             self.update_metrics(loss, nb_ok, batchsize, batch.dialog_round, None)
-        del loss
-        del scores
-
         cand_preds = []
         for i, ordering in enumerate(ranks):
             if cand_vecs.dim() == 2:

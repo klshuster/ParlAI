@@ -168,7 +168,7 @@ class TransResNetModel(nn.Module):
             self.opt['hidden_dim'],
             dropout=self.opt['dropout'])
 
-    def forward(self, batch):
+    def forward(self, batch, cands, cands_type='batch'):
         """
             Input: Batch
             Outputs: total_encoded: query encoding
@@ -186,7 +186,7 @@ class TransResNetModel(nn.Module):
                                       d_hist_encoded,
                                       pers_encoded],
                                      batchsize=len(batch.valid_indices))
-        return total_encoded
+        return self.get_scores(total_encoded, cands, cands_type)
 
     def forward_persona(self, personas, bsz):
         if not self.encode_personality:
@@ -206,7 +206,8 @@ class TransResNetModel(nn.Module):
     def forward_text_encoder(self, texts, dialog_history=False, batchsize=None):
         if texts is None or (dialog_history and not self.encode_dialog_history):
             if (self.multimodal and self.multimodal_combo == 'concat' and
-                    dialog_history):
+                    dialog_history
+            ):
                 encoding = torch.stack([self.blank_encoding for _ in range(batchsize)])
                 return encoding
             return None
