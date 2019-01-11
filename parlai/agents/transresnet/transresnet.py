@@ -167,8 +167,7 @@ class TransresnetAgent(TorchRankerAgent):
             personalities = [o['personality'] for o in valid_obs]
         except:
             import pdb; pdb.set_trace()
-
-        dialog_round = 'round {}'.format(len(valid_obs[0].get('text', '').split('\n'))+1)
+        dialog_round = 'round {}'.format(len(valid_obs[0].get('text', '').split('\n')))
         return Batch(text_vec=batch.text_vec, text_lengths=batch.text_lengths,
                      label_vec=batch.label_vec, label_lengths=batch.label_lengths,
                      labels=batch.labels, valid_indices=batch.valid_indices,
@@ -204,8 +203,7 @@ class TransresnetAgent(TorchRankerAgent):
         _, ranks = scores.sort(1, descending=True)
         nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
                     for b in range(batchsize))
-        self.update_metrics(loss, nb_ok, batchsize, batch.dialog_round, None)
-        del nb_ok
+        self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, None)
         loss.backward()
         self.update_params()
 
@@ -241,7 +239,7 @@ class TransresnetAgent(TorchRankerAgent):
             loss = self.rank_loss(scores, label_inds)
             nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 1
                         for b in range(batchsize))
-            self.update_metrics(loss, nb_ok, batchsize, batch.dialog_round, None)
+            self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, None)
         cand_preds = []
         for i, ordering in enumerate(ranks):
             if cand_vecs.dim() == 2:
