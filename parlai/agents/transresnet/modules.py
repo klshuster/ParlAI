@@ -29,12 +29,25 @@ class TransResNetModel(nn.Module):
     @staticmethod
     def add_cmdline_args(argparser):
         Transformer.add_common_cmdline_args(argparser)
+
         agent = argparser.add_argument_group('CommentBattleModelURU task arguments')
+        # The following override similar parameters in Transformer.add_common_cmdline
+        agent.add_argument('-esz', '--embedding-size', type=int, default=300,
+                           help='Size of all embedding layers')
+        agent.add_argument('--n-layers', type=int, default=2)
+        agent.add_argument('--ffn-size', type=int, default=300*4,
+                           help='Hidden size of the FFN layers')
+        agent.add_argument('--attention-dropout', type=float, default=0.2)
+        agent.add_argument('--relu-dropout', type=float, default=0.2)
+        agent.add_argument('--n-heads', type=int, default=4)
+        agent.add_argument('--learn-positional-embeddings', type='bool', default=False)
+        agent.add_argument('--embeddings-scale', type='bool', default=True)
+
         agent.add_argument('--image-features-dim', type=int, default=2048)
         agent.add_argument('--share-encoder', type='bool', default=False,
                            help='Whether to share the text encoder for the '
                            'labels and the dialog history')
-        agent.add_argument('--hidden-dim', type=int, default=300)
+        agent.add_argument('--hidden-dim', type=int, default=500)
         agent.add_argument('--num-layers-all', type=int, default=-1)
         agent.add_argument('--num-layers-text-encoder', type=int, default=1)
         agent.add_argument('--num-layers-image-encoder', type=int, default=1)

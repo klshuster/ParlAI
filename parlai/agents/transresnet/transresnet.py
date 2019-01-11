@@ -21,7 +21,9 @@ Batch = namedtuple('Batch', ['text_vec', 'text_lengths', 'label_vec',
                              'label_lengths', 'labels', 'valid_indices',
                              'candidates', 'candidate_vecs', 'image',
                              'memory_vecs', 'observations',
-                             'dialog_round', 'personalities']) # additional for this task
+                             'dialog_round',   # additional for this task
+                             'personalities']  # additional for this task
+                   )
 
 
 class TransresnetAgent(TorchRankerAgent):
@@ -167,7 +169,10 @@ class TransresnetAgent(TorchRankerAgent):
             personalities = [o['personality'] for o in valid_obs]
         except:
             import pdb; pdb.set_trace()
-        dialog_round = 'round {}'.format(len(valid_obs[0].get('text', '').split('\n')))
+        if 'text' not in valid_obs[0]:
+            dialog_round = 'round 1'
+        else:
+            dialog_round = 'round {}'.format(len(valid_obs[0]['text'].split('\n'))+1)
         return Batch(text_vec=batch.text_vec, text_lengths=batch.text_lengths,
                      label_vec=batch.label_vec, label_lengths=batch.label_lengths,
                      labels=batch.labels, valid_indices=batch.valid_indices,
@@ -184,9 +189,9 @@ class TransresnetAgent(TorchRankerAgent):
         """
             Modified train step of TorchRanker to split metrics by round
         """
-        if batch.text_vec is None:
+        if batch.image is None:
             return
-        batchsize = batch.text_vec.size(0)
+        batchsize = len(batch.image)
         self.model.train()
         self.optimizer.zero_grad()
 
@@ -219,9 +224,9 @@ class TransresnetAgent(TorchRankerAgent):
             Copying nearly directly from torch ranker agent, modifying to
             keep track of metrics across rounds
         """
-        if batch.text_vec is None:
+        if batch.image is None:
             return
-        batchsize = batch.text_vec.size(0)
+        batchsize = len(batch.image)
         self.model.eval()
 
         cands, cand_vecs, label_inds = self._build_candidates(
@@ -233,7 +238,6 @@ class TransresnetAgent(TorchRankerAgent):
             cands_type=self.opt['eval_candidates']
         )
         _, ranks = scores.sort(1, descending=True)
-
         # Update metrics
         if label_inds is not None:
             loss = self.rank_loss(scores, label_inds)

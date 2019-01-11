@@ -191,7 +191,7 @@ class TorchRankerAgent(TorchAgent):
         """
         label_vecs = batch.label_vec  # [bsz] list of lists of LongTensors
         label_inds = None
-        batchsize = batch.text_vec.shape[0]
+        batchsize = len(batch.valid_indices)
 
         if label_vecs is not None:
             assert label_vecs.dim() == 2
