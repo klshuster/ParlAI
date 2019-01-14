@@ -141,11 +141,11 @@ class TransresnetAgent(TorchRankerAgent):
             and to check image feature
         """
         if 'personality' not in observation:
-            if observation['text'] in self.personalities_list:
+            if observation.get('text', '') in self.personalities_list:
                 observation['personality'] = observation.pop('text')
             elif self.personality_override:
                 observation['personality'] = self.personality_override
-        elif observation.get('text') == observation['personality']:
+        elif observation.get('text', '') == observation['personality']:
             observation.pop('text')
         if 'image' in observation:
             im = observation['image']
