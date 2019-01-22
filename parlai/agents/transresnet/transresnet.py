@@ -21,16 +21,22 @@ Batch = namedtuple('Batch', ['text_vec', 'text_lengths', 'label_vec',
                              'label_lengths', 'labels', 'valid_indices',
                              'candidates', 'candidate_vecs', 'image',
                              'memory_vecs', 'observations',
-                             'dialog_round',   # additional for this task
-                             'personalities']  # additional for this task
+                             'dialog_round',   # additional field for this model
+                             'personalities']  # additional field for this model
                    )
 
 
 class TransresnetAgent(TorchRankerAgent):
-    '''
-        Tries to find the most appropriate comment.
-        Uses URU features which are computed offline
-    '''
+    """
+        Model described in (https://arxiv.org/abs/1811.00945); an extension
+        of the one described in (https://arxiv.org/abs/1810.10665)
+
+        A model for conversation in the context of an image. Given an image and
+        some dialog history, this model will attempt to predict an appropriate
+        next utterance in the dialog, in the context of a given personality.
+
+        See the papers linked above for more information.
+    """
 
     ######################################
     # Initialization and argument parsers
@@ -51,17 +57,12 @@ class TransresnetAgent(TorchRankerAgent):
                                '(whichever is specifed).')
         arg_group.add_argument('--personalities-path', type=str, default=None,
                                help='Path to personalities list')
-        arg_group.add_argument('--num-dialog-rounds', type=int, default=3,
-                               help='Number of dialog rounds for which metrics '
-                               'should be kept. Specify -1 for inf rounds')
         arg_group.add_argument('--load-context-encoder-from', type=str, default=None,
                                help='If specified, loads context encoder from file')
         arg_group.add_argument('--load-label-encoder-from', type=str, default=None,
                                help='If specified, loads label encoder from file')
 
     def __init__(self, opt, shared=None):
-        # The K of the metric will most likely differ between train and
-        # the valid set
         opt['optimizer'] = 'adam'
         if not shared:
             self.personalities_list = self.load_personalities(opt)
@@ -74,57 +75,53 @@ class TransresnetAgent(TorchRankerAgent):
                                'support sharing of lists (for median rank '
                                'calculation). Please set --numthreads to 1')
         self.blank_image_features = torch.FloatTensor(
-            opt.get('image_features_dim')).fill_(0)
+            opt.get('image_features_dim')
+        ).fill_(0)
         self.personality_override = opt.get('personality_override')
         if not shared:
             # override metrics to have per-round metrics
-            if opt.get('num_dialog_rounds') >= 1:
-                self.metrics = {k: {'hitsAt1KC100': 0.0,
-                                    'loss': 0.0,
-                                    'num_samples': 0,
-                                    'med_rank': []}
-                                for k in ['round {}'.format(r+1)
-                                          for r in range(opt['num_dialog_rounds'])]}
-            else:
-                self.metrics = {}
-
+            self.metrics = {}
             self.freeze_patience = opt['freeze_patience']
             if self.freeze_patience != -1:
-                # We use fine tuning. We'll first freeze the encoder,
-                # then release it.
+                # Fine-tuning of a pretrained encoder
                 self.model.freeze_text_encoder()
                 self.freeze_impatience = 0
                 self.freeze_best_metric = 0
                 self.is_frozen = True
         else:
-            # This is a copy of the agent that has been created
-            # for batching or parallelizing purpose.
             self.metrics = shared['metrics']
-
         self.id = 'TransResNetAgent'
         self.episode_done = True
 
     def build_model(self):
+        """Builds the Transresnet Model. Note that in the papers mentioned above,
+           the `--embedding_type` is `fasttext_cc`
+        """
         self.model = TransResNetModel(self.opt,
                                       self.personalities_list,
                                       self.dict)
-        if self.opt['embedding_type'] != 'random':  # NOTE: in model, was fasttext_cc
+        if self.opt['embedding_type'] != 'random':
             self._copy_embeddings(
-                self.model.context_encoder.embeddings,
-                self.opt['embedding_type'], log=True
+                self.model.context_encoder.embeddings.weight,
+                self.opt['embedding_type'],
+                log=True
             )
             if not self.opt['share_encoder']:
                 self._copy_embeddings(
-                    self.model.label_encoder.embeddings,
-                    self.opt['embedding_type'], log=True
+                    self.model.label_encoder.embeddings.weight,
+                    self.opt['embedding_type'],
+                    log=True
                 )
         if self.opt['load_context_encoder_from']:
             self._load_encoder(
-                self.model.context_encoder, self.opt['load_context_encoder_from']
+                self.model.context_encoder,
+                self.opt['load_context_encoder_from']
             )
         if self.opt['load_label_encoder_from']:
             self._load_encoder(
-                self.model.label_encoder, self.opt['load_label_encoder_from'])
+                self.model.label_encoder,
+                self.opt['load_label_encoder_from']
+            )
 
     def share(self):
         shared = super().share()
@@ -137,8 +134,9 @@ class TransresnetAgent(TorchRankerAgent):
 
     def observe(self, observation):
         """
-            overriding to separate personality from the rest of the text
-            and to check image feature
+            Override TorchAgent.observe to
+                1. separate personality from the rest of the text
+                2. format image features for the model
         """
         if 'personality' not in observation:
             if observation.get('text', '') in self.personalities_list:
@@ -153,7 +151,7 @@ class TransresnetAgent(TorchRankerAgent):
                 # Check if given img features of form [1, <dim>, 1, 1]
                 if len(im.size()) == 4:
                     im = im[0, :, 0, 0]
-            except TypeError:  # No Image Feats Given
+            except TypeError:  # No Image Feats Given (e.g. `--image-mode raw`)
                 im = self.blank_image_features
             observation['image'] = im
         return super().observe(observation)
@@ -161,14 +159,11 @@ class TransresnetAgent(TorchRankerAgent):
     def batchify(self, obs_batch, sort=False,
                  is_valid=lambda obs: 'image' in obs):
         """
-            Overriding batchify to include personalities
+            Overriding TorchAgent.batchify to include personalities and dialog round
         """
         batch = super().batchify(obs_batch, sort, is_valid)
         valid_obs = batch.observations
-        try:
-            personalities = [o['personality'] for o in valid_obs]
-        except:
-            import pdb; pdb.set_trace()
+        personalities = [o['personality'] for o in valid_obs]
         if 'text' not in valid_obs[0]:
             dialog_round = 'round 1'
         else:
@@ -181,9 +176,9 @@ class TransresnetAgent(TorchRankerAgent):
                      observations=batch.observations, personalities=personalities,
                      dialog_round=dialog_round)
 
-    def score_candidates(self, batch, cand_vecs, cands_type='batch'):
+    def score_candidates(self, batch, cand_vecs, cands_type='batch', train=True):
         """Given a batch and candidate set, return scores for ranking"""
-        return self.model(batch, cand_vecs, cands_type=cands_type)
+        return self.model(batch, cand_vecs, cands_type=cands_type, train=train)
 
     def train_step(self, batch):
         """
@@ -200,7 +195,8 @@ class TransresnetAgent(TorchRankerAgent):
         scores = self.score_candidates(
             batch,
             cand_vecs,
-            cands_type=self.opt['candidates']
+            cands_type=self.opt['candidates'],
+            train=True
         )
         loss = self.rank_loss(scores, label_inds)
 
@@ -235,7 +231,8 @@ class TransresnetAgent(TorchRankerAgent):
         scores = self.score_candidates(
             batch,
             cand_vecs,
-            cands_type=self.opt['eval_candidates']
+            cands_type=self.opt['eval_candidates'],
+            train=False
         )
         _, ranks = scores.sort(1, descending=True)
         # Update metrics

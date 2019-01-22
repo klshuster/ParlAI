@@ -34,12 +34,9 @@ class TransResNetModel(nn.Module):
         # The following override similar parameters in Transformer.add_common_cmdline
         agent.add_argument('-esz', '--embedding-size', type=int, default=300,
                            help='Size of all embedding layers')
-        agent.add_argument('--n-layers', type=int, default=2)
         agent.add_argument('--ffn-size', type=int, default=300*4,
                            help='Hidden size of the FFN layers')
-        agent.add_argument('--attention-dropout', type=float, default=0.2)
-        agent.add_argument('--relu-dropout', type=float, default=0.2)
-        agent.add_argument('--n-heads', type=int, default=4)
+        agent.add_argument('--n-heads', type=int, default=6)
         agent.add_argument('--learn-positional-embeddings', type='bool', default=False)
         agent.add_argument('--embeddings-scale', type='bool', default=True)
 
@@ -52,7 +49,7 @@ class TransResNetModel(nn.Module):
         agent.add_argument('--num-layers-text-encoder', type=int, default=1)
         agent.add_argument('--num-layers-image-encoder', type=int, default=1)
         agent.add_argument('--num-layers-multimodal-encoder', type=int, default=1)
-        agent.add_argument('--dropout', type=float, default=0)
+        agent.add_argument('--dropout', type=float, default=0.4)
         agent.add_argument('--multimodal', type='bool', default=False,
                            help='If true, feed a query term into a separate '
                            'transformer prior to computing final rank '
@@ -72,10 +69,6 @@ class TransResNetModel(nn.Module):
                            'when retrieving a candidate response')
 
     def __init__(self, opt, personalities_list, dictionary):
-        """
-            Initialize the model.
-            It's important that the options are saved somewhere,
-        """
         super().__init__()
         self.opt = opt
         self.use_cuda = not opt['no_cuda'] and torch.cuda.is_available()
@@ -181,7 +174,7 @@ class TransResNetModel(nn.Module):
             self.opt['hidden_dim'],
             dropout=self.opt['dropout'])
 
-    def forward(self, batch, cands, cands_type='batch'):
+    def forward(self, batch, cands, cands_type='batch', train=False):
         """
             Input: Batch
             Outputs: total_encoded: query encoding
@@ -199,7 +192,7 @@ class TransResNetModel(nn.Module):
                                       d_hist_encoded,
                                       pers_encoded],
                                      batchsize=len(batch.valid_indices))
-        return self.get_scores(total_encoded, cands, cands_type)
+        return self.get_scores(total_encoded, cands, cands_type, train=train)
 
     def forward_persona(self, personas, bsz):
         if not self.encode_personality:
@@ -219,7 +212,7 @@ class TransResNetModel(nn.Module):
     def forward_text_encoder(self, texts, dialog_history=False, batchsize=None):
         if texts is None or (dialog_history and not self.encode_dialog_history):
             if (self.multimodal and self.multimodal_combo == 'concat' and
-                    dialog_history
+                dialog_history
             ):
                 encoding = torch.stack([self.blank_encoding for _ in range(batchsize)])
                 return encoding
@@ -260,13 +253,16 @@ class TransResNetModel(nn.Module):
             rep = torch.stack([self.blank_encoding for _ in range(batchsize)])
         return rep
 
-    def get_scores(self, query_vecs, cand_vecs, cands_type='batch'):
+    def get_scores(self, query_vecs, cand_vecs, cands_type='batch', train=False):
         """
             combines a little bit of elect_best_comment and choose_topk to get
             the scores for candidates
         """
         if cands_type == 'inline':
-            cand_vecs = [self.forward_text_encoder(c).detach() for c in cand_vecs]
+            if not train:
+                cand_vecs = [self.forward_text_encoder(c).detach() for c in cand_vecs]
+            else:
+                cand_vecs = [self.forward_text_encoder(c) for c in cand_vecs]
             scores = torch.cat(
                 [
                     torch.mm(cand_vecs[idx], query_vecs[idx:idx+1, :].transpose(0, 1))
@@ -275,78 +271,11 @@ class TransResNetModel(nn.Module):
                 dim=1
             ).transpose(0, 1)
         else:
-            cand_vecs = self.forward_text_encoder(cand_vecs).detach()
+            cand_vecs = self.forward_text_encoder(cand_vecs)
+            if not train:
+                cand_vecs = cand_vecs.detach()
             scores = query_vecs.mm(cand_vecs.t())
         return scores
-
-
-    def elect_best_comment(self, image_features, personas, dialog_history,
-                           candidates, candidates_encoded=None, k=1, batchsize=None):
-        """
-            Choose the best comment in a list of possible comments.
-            Inputs
-            - image_features: a list of N tensor of size M
-            - persona_features: list of N string, one per sample
-            - dialog_history: newline-concat list of strings
-            - candidates: a list of list of string. Size is N x K, K being the number
-              of candidates.
-              Note: For now the number of candidates is assumed to be small enough
-              that it can fit in one batch.
-            - k: how many ranked comments to return
-            - batchsize: size of minibatch
-            Outputs
-             - elected: list of N string, the comment that has been elected
-        """
-        self.eval()
-        _, _, encoded = self.forward(image_features,
-                                     personas,
-                                     dialog_history,
-                                     None,
-                                     batchsize=batchsize)
-        encoded = encoded.detach()
-        one_cand_set = True
-        if candidates_encoded is None:
-            one_cand_set = False
-            candidates_encoded = [self.forward_text_encoder(c).detach()
-                                  for c in candidates]
-        elected = [self.choose_topk(idx,
-                                    encoded,
-                                    candidates,
-                                    candidates_encoded,
-                                    one_cand_set,
-                                    k)
-                   for idx in range(len(encoded))]
-        return elected
-
-    def choose_topk(self, idx, encoded, candidates,
-                    candidates_encoded, one_cand_set, k):
-        image_vec = encoded[idx:idx + 1, :]
-        scores = torch.mm(candidates_encoded[idx]
-                          if not one_cand_set
-                          else candidates_encoded,
-                          image_vec.transpose(0, 1))
-        if k >= 1:
-            _, index_top = torch.topk(scores, k, dim=0)
-        else:
-            _, index_top = torch.topk(scores, scores.size(0), dim=0)
-        return [candidates[idx][idx2] for idx2 in index_top.unsqueeze(1)]
-
-    def get_loss(self, total_encoded, labels_encoded):
-        """
-         compute the batch loss and also the number of elements that
-         have been correctly classified
-        """
-        if labels_encoded is None:
-            return None, None
-        dot_products = total_encoded.mm(
-            labels_encoded.t())  # batch_size * batch_size
-        log_prob = torch.nn.functional.log_softmax(dot_products, dim=1)
-        targets = torch.arange(0, len(total_encoded), dtype=torch.long)
-        if self.use_cuda:
-            targets = targets.cuda()
-        loss = torch.nn.functional.nll_loss(log_prob, targets)
-        nb_ok = (log_prob.max(dim=1)[1] == targets).float().sum()
-        return loss, nb_ok
 
     def freeze_text_encoder(self):
         self.text_encoder_frozen = True
