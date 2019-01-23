@@ -11,9 +11,6 @@ from torch import nn
 from parlai.agents.transformer import transformer as Transformer
 from parlai.agents.transformer.modules import TransformerEncoder
 
-word_embedding_file = '/private/home/kshuster/data/crawl-300d-2M.vec'
-transformer_file = '/private/home/kshuster/data/redditbest.mdl'
-
 
 class TransResNetModel(nn.Module):
     """
@@ -29,22 +26,19 @@ class TransResNetModel(nn.Module):
     @staticmethod
     def add_cmdline_args(argparser):
         Transformer.add_common_cmdline_args(argparser)
-
-        agent = argparser.add_argument_group('CommentBattleModelURU task arguments')
-        # The following override similar parameters in Transformer.add_common_cmdline
-        agent.add_argument('-esz', '--embedding-size', type=int, default=300,
-                           help='Size of all embedding layers')
-        agent.add_argument('--ffn-size', type=int, default=300*4,
-                           help='Hidden size of the FFN layers')
-        agent.add_argument('--n-heads', type=int, default=6)
-        agent.add_argument('--learn-positional-embeddings', type='bool', default=False)
-        agent.add_argument('--embeddings-scale', type='bool', default=True)
-
+        argparser.set_defaults(
+            ffn_size=1200,
+            n_heads=4,
+            embeddings_scale=False,
+            attention_dropout=0.4,
+            relu_dropout=0.4
+        )
+        agent = argparser.add_argument_group('TransResNetModel arguments')
         agent.add_argument('--image-features-dim', type=int, default=2048)
         agent.add_argument('--share-encoder', type='bool', default=False,
                            help='Whether to share the text encoder for the '
                            'labels and the dialog history')
-        agent.add_argument('--hidden-dim', type=int, default=500)
+        agent.add_argument('--hidden-dim', type=int, default=300)
         agent.add_argument('--num-layers-all', type=int, default=-1)
         agent.add_argument('--num-layers-text-encoder', type=int, default=1)
         agent.add_argument('--num-layers-image-encoder', type=int, default=1)
@@ -134,8 +128,8 @@ class TransResNetModel(nn.Module):
                 ffn_size=self.opt['embedding_size']*4,
                 vocabulary_size=len(dictionary),
                 embedding=None,
-                attention_dropout=self.opt['dropout'],
-                relu_dropout=self.opt['dropout'],
+                attention_dropout=self.opt['attention_dropout'],
+                relu_dropout=self.opt['relu_dropout'],
                 padding_idx=dictionary[dictionary.null_token],
                 learn_positional_embeddings=self.opt.get('learn_positional_embeddings',
                                                          False),
@@ -152,8 +146,8 @@ class TransResNetModel(nn.Module):
             'ffn_size': self.opt['embedding_size']*4,
             'vocabulary_size': len(dictionary),
             'embedding': embeddings,
-            'attention_dropout': self.opt['dropout'],
-            'relu_dropout': self.opt['dropout'],
+            'attention_dropout': self.opt['attention_dropout'],
+            'relu_dropout': self.opt['relu_dropout'],
             'padding_idx': dictionary[dictionary.null_token],
             'learn_positional_embeddings': self.opt.get('learn_positional_embeddings',
                                                         False),

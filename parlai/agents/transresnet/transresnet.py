@@ -49,6 +49,12 @@ class TransresnetAgent(TorchRankerAgent):
     def add_cmdline_args(argparser):
         TorchRankerAgent.add_cmdline_args(argparser)
         TransResNetModel.add_cmdline_args(argparser)
+        argparser.set_defaults(
+            candidates='batch',
+            eval_candidates='inline',
+            embedding_type='fasttext_cc',
+            learningrate='0.0005',
+        )
         arg_group = argparser.add_argument_group('TransResNetAgent Arguments')
         arg_group.add_argument('--freeze-patience', type=int, default=-1)
         arg_group.add_argument('--personality-override', type=str, default=None,
@@ -254,11 +260,11 @@ class TransresnetAgent(TorchRankerAgent):
     def update_metrics(self, total_loss, nb_ok, num_samples, dialog_round,
                        med_rank=None):
         if dialog_round not in self.metrics:
-            self.metrics[dialog_round] = {'hitsAt1KC100': 0.0,
+            self.metrics[dialog_round] = {'accuracy': 0.0,
                                           'loss': 0.0,
                                           'num_samples': 0,
                                           'med_rank': []}
-        self.metrics[dialog_round]['hitsAt1KC100'] += nb_ok
+        self.metrics[dialog_round]['accuracy'] += nb_ok
         self.metrics[dialog_round]['loss'] += total_loss
         self.metrics[dialog_round]['num_samples'] += num_samples
         if med_rank:
@@ -280,7 +286,7 @@ class TransresnetAgent(TorchRankerAgent):
         if 'tasks' in metrics_dict:
             metrics_dict = metrics_dict['tasks']['image_chat']
         if self.freeze_patience != -1 and self.is_frozen:
-            m_key = 'hitsAt1KC100'
+            m_key = 'accuracy'
             ms = [metrics_dict[k].get(m_key, -1)
                   for k in ['round {}'.format(r+1)
                             for r in range(self.opt['num_dialog_rounds'])]]
@@ -309,7 +315,7 @@ class TransresnetAgent(TorchRankerAgent):
     ########################################################################
     def reset_metrics(self):
         for v in self.metrics.values():
-            v['hitsAt1KC100'] = 0.0
+            v['accuracy'] = 0.0
             v['loss'] = 0.0
             v['num_samples'] = 0.0
             if 'med_rank' in v:
@@ -319,7 +325,7 @@ class TransresnetAgent(TorchRankerAgent):
         m = {k: {} for k in self.metrics.keys()}
         for k, v in self.metrics.items():
             if v['num_samples'] > 0:
-                m[k]['hitsAt1KC100'] = v['hitsAt1KC100'] / v['num_samples']
+                m[k]['accuracy'] = v['accuracy'] / v['num_samples']
                 m[k]['loss'] = v['loss'] / v['num_samples']
                 if 'med_rank' in v:
                     m[k]['med_rank'] = np.median(v['med_rank'])
