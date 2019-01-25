@@ -8,8 +8,10 @@
 
 import torch
 from torch import nn
+import numpy as np
 from parlai.agents.transformer import transformer as Transformer
-from parlai.agents.transformer.modules import TransformerEncoder
+from parlai.agents.transformer.modules import TransformerEncoder, \
+    create_position_codes, TransformerEncoderLayer
 
 
 class TransResNetModel(nn.Module):
@@ -39,7 +41,7 @@ class TransResNetModel(nn.Module):
                            help='Whether to share the text encoder for the '
                            'labels and the dialog history')
         agent.add_argument('--hidden-dim', type=int, default=300)
-        agent.add_argument('--num-layers-all', type=int, default=-1)
+        agent.add_argument('--num-layers-all', type=int, default=1)
         agent.add_argument('--num-layers-text-encoder', type=int, default=1)
         agent.add_argument('--num-layers-image-encoder', type=int, default=1)
         agent.add_argument('--num-layers-multimodal-encoder', type=int, default=1)
@@ -87,19 +89,19 @@ class TransResNetModel(nn.Module):
         # Image Encoder
         self.build_image_encoder()
 
-        # Persona Encoder
-        self.build_persona_encoder(personalities_list)
+        # personality Encoder
+        self.build_personality_encoder(personalities_list)
 
-    def build_persona_encoder(self, personalities_list):
+    def build_personality_encoder(self, personalities_list):
         # Initialize personas dictionary
-        self.persona_to_id = {}
+        self.personality_to_id = {}
         for i, p in enumerate(personalities_list):
-            self.persona_to_id[p] = i
-        self.persona_dim = len(personalities_list) + 1
-        persona_layers = [nn.BatchNorm1d(self.persona_dim),
-                          nn.Dropout(p=self.opt['dropout']),
-                          nn.Linear(self.persona_dim, self.opt['hidden_dim'])]
-        self.persona_encoder = nn.Sequential(*persona_layers)
+            self.personality_to_id[p] = i
+        self.personality_dim = len(personalities_list) + 1
+        personality_layers = [nn.BatchNorm1d(self.personality_dim),
+                              nn.Dropout(p=self.opt['dropout']),
+                              nn.Linear(self.personality_dim, self.opt['hidden_dim'])]
+        self.personality_encoder = nn.Sequential(*personality_layers)
 
     def build_image_encoder(self):
         nlayers_img = (self.opt['num_layers_all'] if self.opt['num_layers_all'] != -1
@@ -121,19 +123,15 @@ class TransResNetModel(nn.Module):
             self.multimodal_combo = self.opt.get('multimodal_combo', 'sum')
             nlayers_mm = (self.opt['num_layers_all'] if self.opt['num_layers_all'] != -1
                           else self.opt['num_layers_multimodal_encoder'])
-            self.multimodal_encoder = TransformerEncoder(
+            self.multimodal_encoder = MultimodalCombiner(
                 n_heads=self.opt['n_heads'],
                 n_layers=nlayers_mm,
-                embedding_size=self.opt['embedding_size'],
+                hidden_dim=self.opt['hidden_dim'],
                 ffn_size=self.opt['embedding_size']*4,
-                vocabulary_size=len(dictionary),
-                embedding=None,
                 attention_dropout=self.opt['attention_dropout'],
                 relu_dropout=self.opt['relu_dropout'],
-                padding_idx=dictionary[dictionary.null_token],
                 learn_positional_embeddings=self.opt.get('learn_positional_embeddings',
                                                          False),
-                embeddings_scale=self.opt['embeddings_scale'],
                 reduction=True)
 
     def build_encoders(self, dictionary):
@@ -174,49 +172,56 @@ class TransResNetModel(nn.Module):
             Outputs: total_encoded: query encoding
         """
         # dialog history
-        d_hist_encoded = self.forward_text_encoder(batch.text_vec,
-                                                   dialog_history=True,
-                                                   batchsize=len(batch.valid_indices))
+        d_hist_encoded = self.forward_context(batch.text_vec,
+                                              batchsize=len(batch.valid_indices))
         # images
         img_encoded = self.forward_image(batch.image)
-        # personas
-        pers_encoded = self.forward_persona(batch.personalities,
-                                            len(batch.valid_indices))
+        # Personalities
+        pers_encoded = self.forward_personality(batch.personalities,
+                                                len(batch.valid_indices))
         total_encoded = self.get_rep([img_encoded,
                                       d_hist_encoded,
                                       pers_encoded],
                                      batchsize=len(batch.valid_indices))
         return self.get_scores(total_encoded, cands, cands_type, train=train)
 
-    def forward_persona(self, personas, bsz):
+    def forward_personality(self, personalities, bsz):
         if not self.encode_personality:
             if self.multimodal and self.multimodal_combo == 'concat':
                 return self.blank_encoding
             return None
-        if personas is None:
-            personas = [''] * bsz
-        pers_vec = torch.FloatTensor(len(personas), self.persona_dim).fill_(0)
-        pers_list = [self.persona_to_id.get(p, 0) + 1 for p in personas]
+        if personalities is None:
+            personalities = [''] * bsz
+        pers_vec = torch.FloatTensor(len(personalities), self.personality_dim).fill_(0)
+        pers_list = [self.personality_to_id.get(p, 0) + 1 for p in personalities]
         for i, index in enumerate(pers_list):
             pers_vec[i, index] = 1  # no personality corresponds to 0
         if self.use_cuda:
             pers_vec = pers_vec.cuda()
-        return self.persona_encoder(pers_vec)
+        return self.personality_encoder(pers_vec)
 
-    def forward_text_encoder(self, texts, dialog_history=False, batchsize=None):
-        if texts is None or (dialog_history and not self.encode_dialog_history):
-            if (self.multimodal and self.multimodal_combo == 'concat' and
-                dialog_history
-            ):
-                encoding = torch.stack([self.blank_encoding for _ in range(batchsize)])
-                return encoding
-            return None
-        encoder = self.context_encoder if dialog_history else self.label_encoder
-        texts_encoded = encoder(texts)
+    def forward_context(self, context, batchsize=None):
+        if context is None or not self.encode_dialog_history:
+            if self.multimodal and self.multimodal_combo == 'concat':
+                return torch.stack([self.blank_encoding for _ in range(batchsize)])
+            else:
+                return None
+
+        encoded = self.context_encoder(context)
         if self.text_encoder_frozen:
-            texts_encoded = texts_encoded.detach()
-        texts_encoded = self.additional_layer(texts_encoded)
-        return texts_encoded
+            encoded = encoded.detach()
+        encoded = self.additional_layer(encoded)
+        return encoded
+
+    def forward_candidates(self, cands, batchsize=None):
+        if cands is None:
+            return None
+
+        encoded = self.label_encoder(cands)
+        if self.text_encoder_frozen:
+            encoded = encoded.detach()
+        encoded = self.additional_layer(encoded)
+        return encoded
 
     def forward_image(self, image_features):
         if image_features is None or not self.encode_image:
@@ -254,9 +259,9 @@ class TransResNetModel(nn.Module):
         """
         if cands_type == 'inline':
             if not train:
-                cand_vecs = [self.forward_text_encoder(c).detach() for c in cand_vecs]
+                cand_vecs = [self.forward_candidates(c).detach() for c in cand_vecs]
             else:
-                cand_vecs = [self.forward_text_encoder(c) for c in cand_vecs]
+                cand_vecs = [self.forward_candidates(c) for c in cand_vecs]
             scores = torch.cat(
                 [
                     torch.mm(cand_vecs[idx], query_vecs[idx:idx+1, :].transpose(0, 1))
@@ -265,7 +270,7 @@ class TransResNetModel(nn.Module):
                 dim=1
             ).transpose(0, 1)
         else:
-            cand_vecs = self.forward_text_encoder(cand_vecs)
+            cand_vecs = self.forward_candidates(cand_vecs)
             if not train:
                 cand_vecs = cand_vecs.detach()
             scores = query_vecs.mm(cand_vecs.t())
@@ -309,3 +314,72 @@ class LinearWrapper(nn.Module):
 
     def forward(self, input):
         return self.lin(self.dp(input))
+
+
+########################################
+# Multimodal Combiner                  #
+########################################
+
+
+class MultimodalCombiner(nn.Module):
+    """
+        Essentially a transformer, with no embeddings. See TransformerEncoder
+        in parlai.agents.transformer.modules.
+    """
+    def __init__(
+        self,
+        n_heads,
+        n_layers,
+        hidden_dim,
+        ffn_size,
+        reduction=True,
+        attention_dropout=0.0,
+        relu_dropout=0.0,
+        learn_positional_embeddings=False
+    ):
+        super().__init__()
+        self.ffn_size = ffn_size
+        self.n_layers = n_layers
+        self.n_heads = n_heads
+        self.out_dim = hidden_dim
+        self.dim = hidden_dim
+        self.reduction = reduction
+        assert hidden_dim % n_heads == 0, \
+            'MM-Combiner dim must be multiple of n_heads'
+        n_positions = 1024
+        self.position_embeddings = nn.Embedding(n_positions, hidden_dim)
+        if not learn_positional_embeddings:
+            create_position_codes(
+                n_positions, hidden_dim, out=self.position_embeddings.weight
+            )
+        else:
+            nn.init.normal_(self.position_embeddings.weight, 0, hidden_dim ** -0.5)
+
+        self.layers = nn.ModuleList()
+        for _ in range(self.n_layers):
+            self.layers.append(TransformerEncoderLayer(
+                n_heads, hidden_dim, ffn_size, attention_dropout, relu_dropout
+            ))
+
+    def forward(self, tensor, mask):
+        """
+            tensor data is a FloatTensor of shape [batch, seq_len, dim]
+            mask is a ByteTensor of shape [batch, seq_len], filled with 1 when
+            inside the sequence and 0 outside.
+        """
+        seq_len = tensor.size(1)
+        positions = tensor.new(seq_len).long()
+        positions = torch.arange(seq_len, out=positions).unsqueeze(0)
+        tensor = tensor + self.position_embeddings(positions).expand_as(tensor)
+
+        tensor *= mask.unsqueeze(-1).float()
+        for i in range(self.n_layers):
+            tensor = self.layers[i](tensor, mask)
+
+        if self.reduction:
+            divisor = mask.float().sum(dim=1).unsqueeze(-1).clamp(min=1e-20)
+            output = tensor.sum(dim=1) / divisor
+            return output
+        else:
+            output = tensor
+            return output, mask

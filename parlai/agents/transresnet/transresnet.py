@@ -54,6 +54,7 @@ class TransresnetAgent(TorchRankerAgent):
             eval_candidates='inline',
             embedding_type='fasttext_cc',
             learningrate='0.0005',
+            optimizer='adam'
         )
         arg_group = argparser.add_argument_group('TransResNetAgent Arguments')
         arg_group.add_argument('--freeze-patience', type=int, default=-1)
@@ -69,7 +70,6 @@ class TransresnetAgent(TorchRankerAgent):
                                help='If specified, loads label encoder from file')
 
     def __init__(self, opt, shared=None):
-        opt['optimizer'] = 'adam'
         if not shared:
             self.personalities_list = self.load_personalities(opt)
         else:
@@ -106,28 +106,30 @@ class TransresnetAgent(TorchRankerAgent):
         self.model = TransResNetModel(self.opt,
                                       self.personalities_list,
                                       self.dict)
-        if self.opt['embedding_type'] != 'random':
-            self._copy_embeddings(
-                self.model.context_encoder.embeddings.weight,
-                self.opt['embedding_type'],
-                log=True
-            )
-            if not self.opt['share_encoder']:
-                self._copy_embeddings(
-                    self.model.label_encoder.embeddings.weight,
-                    self.opt['embedding_type'],
-                    log=True
-                )
-        if self.opt['load_context_encoder_from']:
-            self._load_encoder(
-                self.model.context_encoder,
-                self.opt['load_context_encoder_from']
-            )
         if self.opt['load_label_encoder_from']:
             self._load_encoder(
                 self.model.label_encoder,
                 self.opt['load_label_encoder_from']
             )
+        elif self.opt['embedding_type'] != 'random':
+            self._copy_embeddings(
+                self.model.label_encoder.embeddings.weight,
+                self.opt['embedding_type'],
+                log=True
+            )
+        if not self.opt['share_encoder']:
+
+            if self.opt['load_context_encoder_from']:
+                self._load_encoder(
+                    self.model.context_encoder,
+                    self.opt['load_context_encoder_from']
+                )
+            elif self.opt['embedding_type'] != 'random':
+                self._copy_embeddings(
+                    self.model.context_encoder.embeddings.weight,
+                    self.opt['embedding_type'],
+                    log=True
+                )
 
     def share(self):
         shared = super().share()
@@ -210,7 +212,9 @@ class TransresnetAgent(TorchRankerAgent):
         _, ranks = scores.sort(1, descending=True)
         nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
                     for b in range(batchsize))
-        self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, None)
+        inds = [(ranks[b] == label_inds[b]).nonzero().item() + 1
+                for b in range(batchsize)]
+        self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, inds)
         loss.backward()
         self.update_params()
 
@@ -244,9 +248,11 @@ class TransresnetAgent(TorchRankerAgent):
         # Update metrics
         if label_inds is not None:
             loss = self.rank_loss(scores, label_inds)
-            nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 1
+            nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
                         for b in range(batchsize))
-            self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, None)
+            inds = [(ranks[b] == label_inds[b]).nonzero().item() + 1
+                    for b in range(batchsize)]
+            self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, inds)
         cand_preds = []
         for i, ordering in enumerate(ranks):
             if cand_vecs.dim() == 2:
