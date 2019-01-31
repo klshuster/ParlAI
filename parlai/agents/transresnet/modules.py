@@ -8,8 +8,6 @@
 
 import torch
 from torch import nn
-import numpy as np
-from parlai.agents.transformer import transformer as Transformer
 from parlai.agents.transformer.modules import TransformerEncoder, \
     create_position_codes, TransformerEncoderLayer
 
@@ -24,45 +22,6 @@ class TransResNetModel(nn.Module):
             2. (Multi-modal) Feed (something) into a separate transformer
                after computing the encoding; use that as query
     """
-
-    @staticmethod
-    def add_cmdline_args(argparser):
-        Transformer.add_common_cmdline_args(argparser)
-        argparser.set_defaults(
-            ffn_size=1200,
-            n_heads=4,
-            embeddings_scale=False,
-            attention_dropout=0.4,
-            relu_dropout=0.4
-        )
-        agent = argparser.add_argument_group('TransResNetModel arguments')
-        agent.add_argument('--image-features-dim', type=int, default=2048)
-        agent.add_argument('--share-encoder', type='bool', default=False,
-                           help='Whether to share the text encoder for the '
-                           'labels and the dialog history')
-        agent.add_argument('--hidden-dim', type=int, default=300)
-        agent.add_argument('--num-layers-all', type=int, default=1)
-        agent.add_argument('--num-layers-text-encoder', type=int, default=1)
-        agent.add_argument('--num-layers-image-encoder', type=int, default=1)
-        agent.add_argument('--num-layers-multimodal-encoder', type=int, default=1)
-        agent.add_argument('--dropout', type=float, default=0.4)
-        agent.add_argument('--multimodal', type='bool', default=False,
-                           help='If true, feed a query term into a separate '
-                           'transformer prior to computing final rank '
-                           'scores')
-        agent.add_argument('--multimodal-combo', type=str,
-                           choices=['concat', 'sum'], default='sum',
-                           help='How to combine the encoding for the '
-                           'multi-modal transformer')
-        agent.add_argument('--encode-image', type='bool', default=True,
-                           help='Whether to include the image encoding when '
-                           'retrieving a candidate response')
-        agent.add_argument('--encode-dialog-history', type='bool', default=True,
-                           help='Whether to include the dialog history '
-                           'encoding when retrieving a candidate response')
-        agent.add_argument('--encode-personality', type='bool', default=True,
-                           help='Whether to include the personality encoding '
-                           'when retrieving a candidate response')
 
     def __init__(self, opt, personalities_list, dictionary):
         super().__init__()

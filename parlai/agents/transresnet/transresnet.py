@@ -8,6 +8,7 @@
 
 from parlai.core.utils import round_sigfigs
 from parlai.core.torch_ranker_agent import TorchRankerAgent
+from parlai.agents.transformer import transformer as Transformer
 from parlai.core.torch_agent import Output
 from .modules import TransResNetModel
 
@@ -38,23 +39,22 @@ class TransresnetAgent(TorchRankerAgent):
         See the papers linked above for more information.
     """
 
-    ######################################
-    # Initialization and argument parsers
-    ######################################
-    P1_TOKEN = '__p1__'
-    P2_TOKEN = '__p2__'
-    TOKENS = [P1_TOKEN, P2_TOKEN]
-
     @staticmethod
     def add_cmdline_args(argparser):
         TorchRankerAgent.add_cmdline_args(argparser)
-        TransResNetModel.add_cmdline_args(argparser)
+        Transformer.add_common_cmdline_args(argparser)
         argparser.set_defaults(
             candidates='batch',
             eval_candidates='inline',
             embedding_type='fasttext_cc',
             learningrate='0.0005',
-            optimizer='adam'
+            optimizer='adam',
+            ffn_size=1200,
+            n_heads=4,
+            embeddings_scale=False,
+            attention_dropout=0.2,
+            relu_dropout=0.2,
+            gradient_clip=-1
         )
         arg_group = argparser.add_argument_group('TransResNetAgent Arguments')
         arg_group.add_argument('--freeze-patience', type=int, default=-1)
@@ -68,6 +68,35 @@ class TransresnetAgent(TorchRankerAgent):
                                help='If specified, loads context encoder from file')
         arg_group.add_argument('--load-label-encoder-from', type=str, default=None,
                                help='If specified, loads label encoder from file')
+
+        model = argparser.add_argument_group('TransResNetModel Arguments')
+        model.add_argument('--image-features-dim', type=int, default=2048)
+        model.add_argument('--share-encoder', type='bool', default=False,
+                           help='Whether to share the text encoder for the '
+                           'labels and the dialog history')
+        model.add_argument('--hidden-dim', type=int, default=300)
+        model.add_argument('--num-layers-all', type=int, default=1)
+        model.add_argument('--num-layers-text-encoder', type=int, default=1)
+        model.add_argument('--num-layers-image-encoder', type=int, default=1)
+        model.add_argument('--num-layers-multimodal-encoder', type=int, default=1)
+        model.add_argument('--dropout', type=float, default=0.4)
+        model.add_argument('--multimodal', type='bool', default=False,
+                           help='If true, feed a query term into a separate '
+                           'transformer prior to computing final rank '
+                           'scores')
+        model.add_argument('--multimodal-combo', type=str,
+                           choices=['concat', 'sum'], default='sum',
+                           help='How to combine the encoding for the '
+                           'multi-modal transformer')
+        model.add_argument('--encode-image', type='bool', default=True,
+                           help='Whether to include the image encoding when '
+                           'retrieving a candidate response')
+        model.add_argument('--encode-dialog-history', type='bool', default=True,
+                           help='Whether to include the dialog history '
+                           'encoding when retrieving a candidate response')
+        model.add_argument('--encode-personality', type='bool', default=True,
+                           help='Whether to include the personality encoding '
+                           'when retrieving a candidate response')
 
     def __init__(self, opt, shared=None):
         if not shared:
@@ -207,6 +236,9 @@ class TransresnetAgent(TorchRankerAgent):
             train=True
         )
         loss = self.rank_loss(scores, label_inds)
+        loss.backward()
+        self.update_params()
+        return None
 
         # Update metrics (this is where it differs from Torch Ranker)
         _, ranks = scores.sort(1, descending=True)
