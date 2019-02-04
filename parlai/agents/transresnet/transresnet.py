@@ -400,6 +400,7 @@ class TransresnetAgent(TorchRankerAgent):
             states['personas_list'],
             states['dict'])
         self.model.load_state_dict(states['model'])
+        return states
 
     def _load_encoder(self, encoder, path):
         states = torch.load(path, map_location='cpu')
