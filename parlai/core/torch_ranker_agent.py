@@ -122,6 +122,15 @@ class TorchRankerAgent(TorchAgent):
         rank = (above_dot_prods > 0).float().sum().item()
         self.metrics['rank'] += rank
 
+    def get_batch_eval_metrics(self, scores, ranks, label_inds):
+        loss = self.rank_loss(scores, label_inds)
+        batchsize = scores.size(0)
+        self.metrics['loss'] += loss.item()
+        self.metrics['examples'] += batchsize
+        for b in range(batchsize):
+            rank = (ranks[b] == label_inds[b]).nonzero().item()
+            self.metrics['rank'] += 1 + rank
+
     def get_train_preds(self, scores, label_inds, cands, cand_vecs):
         # TODO: speed these calculations up
         batchsize = scores.size(0)
@@ -139,9 +148,10 @@ class TorchRankerAgent(TorchAgent):
 
     def train_step(self, batch):
         """Train on a single batch of examples."""
-        if batch.text_vec is None:
+        if batch.text_vec is None and batch.image is None:
             return
-        batchsize = batch.text_vec.size(0)
+        batchsize = (batch.text_vec.size(0) if batch.text_vec is not None
+                     else len(batch.image))
         self.model.train()
         self.zero_grad()
 
@@ -170,9 +180,10 @@ class TorchRankerAgent(TorchAgent):
 
     def eval_step(self, batch):
         """Evaluate a single batch of examples."""
-        if batch.text_vec is None:
+        if batch.text_vec is None and batch.image is None:
             return
-        batchsize = batch.text_vec.size(0)
+        batchsize = (batch.text_vec.size(0) if batch.text_vec is not None
+                     else len(batch.image))
         self.model.eval()
 
         cands, cand_vecs, label_inds = self._build_candidates(
@@ -183,12 +194,7 @@ class TorchRankerAgent(TorchAgent):
 
         # Update metrics
         if label_inds is not None:
-            loss = self.rank_loss(scores, label_inds)
-            self.metrics['loss'] += loss.item()
-            self.metrics['examples'] += batchsize
-            for b in range(batchsize):
-                rank = (ranks[b] == label_inds[b]).nonzero().item()
-                self.metrics['rank'] += 1 + rank
+            self.get_batch_eval_metrics(scores, ranks, label_inds)
 
         cand_preds = []
         for i, ordering in enumerate(ranks):

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree. An additional grant
-# of patent rights can be found in the PATENTS file in the same directory.
+# Copyright (c) Facebook, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import torch
 from torch import nn
@@ -40,7 +38,7 @@ class TransResNetModel(nn.Module):
         self.encode_dialog_history = opt.get('encode_dialog_history', True)
 
         # Multimodal Combiner (build if `--multimodal true` )
-        self.build_multimodal(dictionary)
+        self.build_multimodal()
 
         # Label and Context (dialog history) Encoders
         self.build_encoders(dictionary)
@@ -76,7 +74,7 @@ class TransResNetModel(nn.Module):
                                        self.opt['hidden_dim'])]
         self.image_encoder = nn.Sequential(*image_layers)
 
-    def build_multimodal(self, dictionary):
+    def build_multimodal(self):
         self.multimodal = self.opt.get('multimodal')
         if self.multimodal:
             self.multimodal_combo = self.opt.get('multimodal_combo', 'sum')
@@ -127,17 +125,23 @@ class TransResNetModel(nn.Module):
 
     def forward(self, batch, cands, cands_type='batch', train=False):
         """
-            Input: Batch
-            Outputs: total_encoded: query encoding
+            :param batch: a Batch object (defined in torch_agent.py)
+            :param cands: candidates for this batch
+            :param cands_type: source of candidates for this batch, one of
+                ['batch', 'inline', 'fixed']
+            :param train: True if model is training
+
+            :return: model scores for each item in the batch
         """
         # dialog history
         d_hist_encoded = self.forward_context(batch.text_vec,
                                               batchsize=len(batch.valid_indices))
         # images
         img_encoded = self.forward_image(batch.image)
-        # Personalities
+        # personalities
         pers_encoded = self.forward_personality(batch.personalities,
                                                 len(batch.valid_indices))
+        # combined
         total_encoded = self.get_rep([img_encoded,
                                       d_hist_encoded,
                                       pers_encoded],
@@ -145,10 +149,18 @@ class TransResNetModel(nn.Module):
         return self.get_scores(total_encoded, cands, cands_type, train=train)
 
     def forward_personality(self, personalities, bsz):
+        """
+            :param personalities: [bsz] list of personalities (or None)
+            :param bsz: batchsize
+
+            :return: a [bsz, hidden_dim] FloatTensor of encoded personalities
+        """
         if not self.encode_personality:
             if self.multimodal and self.multimodal_combo == 'concat':
                 return self.blank_encoding
-            return None
+            else:
+                return None
+
         if personalities is None:
             personalities = [''] * bsz
         pers_vec = torch.FloatTensor(len(personalities), self.personality_dim).fill_(0)
@@ -160,6 +172,12 @@ class TransResNetModel(nn.Module):
         return self.personality_encoder(pers_vec)
 
     def forward_context(self, context, batchsize=None):
+        """
+            :param context: a [bsz, seq_len] LongTensor of token indices
+            :param batchsize: batch size
+
+            :return: a [bsz, hidden_dim] FloatTensor of encoded context
+        """
         if context is None or not self.encode_dialog_history:
             if self.multimodal and self.multimodal_combo == 'concat':
                 return torch.stack([self.blank_encoding for _ in range(batchsize)])
@@ -173,6 +191,9 @@ class TransResNetModel(nn.Module):
         return encoded
 
     def forward_candidates(self, cands, batchsize=None):
+        """
+            :param cands:
+        """
         if cands is None:
             return None
 
@@ -183,6 +204,11 @@ class TransResNetModel(nn.Module):
         return encoded
 
     def forward_image(self, image_features):
+        """
+            :param image_features: a [bsz] list of [image_features_dim] FloatTensors
+
+            :return: a [bsz, hidden_dim] FloatTensor of encoded images
+        """
         if image_features is None or not self.encode_image:
             if self.multimodal and self.multimodal_combo == 'concat':
                 return self.blank_encoding
@@ -196,6 +222,14 @@ class TransResNetModel(nn.Module):
         return self.image_encoder(imgs)
 
     def get_rep(self, encodings, batchsize=None):
+        """
+            :param encodings: a 3-element list, where each element is either
+                a tensor of dimension [bsz, hidden_dim]
+                OR None
+            :param batchsize: size of batch
+
+            :return: a [bsz, hidden_dim] FloatTensor of encodings
+        """
         if not self.multimodal:
             rep = self.sum(encodings)
         else:
@@ -213,8 +247,16 @@ class TransResNetModel(nn.Module):
 
     def get_scores(self, query_vecs, cand_vecs, cands_type='batch', train=False):
         """
-            combines a little bit of elect_best_comment and choose_topk to get
-            the scores for candidates
+            :param query_vecs: a [bsz, hidden_dim] FloatTensor of example encodings
+            :param cand_vecs: *dependent on cands_type*
+                if 'batch', a [bsz, seq_len] LongTensor of token indices
+                if 'inline', a [bsz, num_cands_per_example, seq_len]
+                    LongTensor of token indices
+            :param cands_type: source of candidates for this batch, one of
+                ['batch', 'inline', 'fixed']
+            :param train: whether this is a train batch
+
+            :return: a [bsz, num_cands_per_example] FloatTensor of scores
         """
         if cands_type == 'inline':
             if not train:
@@ -242,7 +284,7 @@ class TransResNetModel(nn.Module):
         self.text_encoder_frozen = False
 
     ##################################################
-    #     Util Funcs
+    #     tensor combination functions
     ##################################################
     def sum(self, addends):
         addends = [a for a in addends if a is not None]
@@ -261,9 +303,6 @@ class TransResNetModel(nn.Module):
 class LinearWrapper(nn.Module):
     """
         Adds one linear layer on top of a module.
-        This was designed for the transformer, since pretrained
-        instance don't use dropout, and they are constrained to
-        keep the dimension of the word embedding.
     """
 
     def __init__(self, in_dim, out_dim, dropout):
@@ -322,9 +361,12 @@ class MultimodalCombiner(nn.Module):
 
     def forward(self, tensor, mask):
         """
-            tensor data is a FloatTensor of shape [batch, seq_len, dim]
-            mask is a ByteTensor of shape [batch, seq_len], filled with 1 when
-            inside the sequence and 0 outside.
+            :param tensor: a [bsz, seq_len, hidden_dim] FloatTensor
+            :param mask: a [bsz, seq_len] ByteTensor filled with 1 when
+                inside the sequence and 0 outside.
+
+            :return: output: a [bsz, hidden_dim] FloatTensor of encodings
+                     mask: the same as before
         """
         seq_len = tensor.size(1)
         positions = tensor.new(seq_len).long()

@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 
-# Copyright (c) 2017-present, Facebook, Inc.
-# All rights reserved.
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree. An additional grant
-# of patent rights can be found in the PATENTS file in the same directory.
+# Copyright (c) Facebook, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 from parlai.core.utils import round_sigfigs
 from parlai.core.torch_ranker_agent import TorchRankerAgent
 from parlai.agents.transformer import transformer as Transformer
-from parlai.core.torch_agent import Output
 from .modules import TransResNetModel
 
 import os
@@ -115,7 +112,8 @@ class TransresnetAgent(TorchRankerAgent):
         self.personality_override = opt.get('personality_override')
         if not shared:
             # override metrics to have per-round metrics
-            self.metrics = {}
+            self.metrics = {'loss': 0.0, 'examples': 0, 'rank': 0,
+                            'train_accuracy': 0.0}
             self.freeze_patience = opt['freeze_patience']
             if self.freeze_patience != -1:
                 # Fine-tuning of a pretrained encoder
@@ -129,8 +127,8 @@ class TransresnetAgent(TorchRankerAgent):
         self.episode_done = True
 
     def build_model(self):
-        """Builds the Transresnet Model. Note that in the papers mentioned above,
-           the `--embedding_type` is `fasttext_cc`
+        """
+            Builds the Transresnet Model.
         """
         self.model = TransResNetModel(self.opt,
                                       self.personalities_list,
@@ -164,10 +162,6 @@ class TransresnetAgent(TorchRankerAgent):
         shared = super().share()
         shared['personalities_list'] = self.personalities_list
         return shared
-
-    ######################################
-    #  Observing and acting
-    ######################################
 
     def observe(self, observation):
         """
@@ -213,111 +207,78 @@ class TransresnetAgent(TorchRankerAgent):
                      observations=batch.observations, personalities=personalities,
                      dialog_round=dialog_round)
 
-    def score_candidates(self, batch, cand_vecs, cands_type='batch', train=True):
+    def score_candidates(self, batch, cand_vecs):
         """Given a batch and candidate set, return scores for ranking"""
-        return self.model(batch, cand_vecs, cands_type=cands_type, train=train)
+        cands_type = (self.opt['candidates'] if self.training
+                      else self.opt['eval_candidates'])
+        return self.model(batch, cand_vecs, cands_type=cands_type, train=self.training)
 
     def train_step(self, batch):
-        """
-            Modified train step of TorchRanker to split metrics by round
-        """
-        if batch.image is None:
-            return
-        batchsize = len(batch.image)
-        self.model.train()
-        self.optimizer.zero_grad()
+        self.batch = batch
+        self.training = True
+        return super().train_step(batch)
 
-        cands, cand_vecs, label_inds = self._build_candidates(
-            batch, source=self.opt['candidates'], mode='train')
-        scores = self.score_candidates(
-            batch,
-            cand_vecs,
-            cands_type=self.opt['candidates'],
-            train=True
+    def eval_step(self, batch):
+        self.batch = batch
+        self.training = False
+        return super().eval_step(batch)
+
+    def get_batch_train_metrics(self, scores):
+        batchsize = scores.size(0)
+        # get accuracy
+        targets = scores.new_empty(batchsize).long()
+        targets = torch.arange(batchsize, out=targets)
+        nb_ok = (scores.max(dim=1)[1] == targets).float().sum().item()
+        # calculate med rank
+        inds = None
+        if self.opt.get('train_predict'):
+            _, ranks = scores.sort(1, descending=True)
+            inds = [(ranks[b] == targets[b]).nonzero().item() + 1
+                    for b in range(batchsize)]
+
+        self.update_metrics(
+            nb_ok,
+            batchsize,
+            self.batch.dialog_round,
+            med_rank=inds
         )
-        loss = self.rank_loss(scores, label_inds)
-        loss.backward()
-        self.update_params()
-        return None
 
-        # Update metrics (this is where it differs from Torch Ranker)
-        _, ranks = scores.sort(1, descending=True)
+    def get_batch_eval_metrics(self, scores, ranks, label_inds):
+        loss = self.rank_loss(scores, label_inds)
+        batchsize = scores.size(0)
         nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
                     for b in range(batchsize))
         inds = [(ranks[b] == label_inds[b]).nonzero().item() + 1
                 for b in range(batchsize)]
-        self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, inds)
-        loss.backward()
-        self.update_params()
-
-        # Get predictions but not full rankings for the sake of speed
-        if cand_vecs.dim() == 2:
-            preds = [cands[ordering[0]] for ordering in ranks]
-        elif cand_vecs.dim() == 3:
-            preds = [cands[i][ordering[0]] for i, ordering in enumerate(ranks)]
-        return Output(preds)
-
-    def eval_step(self, batch):
-        """
-            Copying nearly directly from torch ranker agent, modifying to
-            keep track of metrics across rounds
-        """
-        if batch.image is None:
-            return
-        batchsize = len(batch.image)
-        self.model.eval()
-
-        cands, cand_vecs, label_inds = self._build_candidates(
-            batch, source=self.opt['eval_candidates'], mode='eval')
-
-        scores = self.score_candidates(
-            batch,
-            cand_vecs,
-            cands_type=self.opt['eval_candidates'],
-            train=False
+        self.update_metrics(
+            nb_ok,
+            batchsize,
+            self.batch.dialog_round,
+            med_rank=inds,
+            total_loss=loss.item()
         )
-        _, ranks = scores.sort(1, descending=True)
-        # Update metrics
-        if label_inds is not None:
-            loss = self.rank_loss(scores, label_inds)
-            nb_ok = sum((ranks[b] == label_inds[b]).nonzero().item() == 0
-                        for b in range(batchsize))
-            inds = [(ranks[b] == label_inds[b]).nonzero().item() + 1
-                    for b in range(batchsize)]
-            self.update_metrics(loss.item(), nb_ok, batchsize, batch.dialog_round, inds)
-        cand_preds = []
-        for i, ordering in enumerate(ranks):
-            if cand_vecs.dim() == 2:
-                cand_list = cands
-            elif cand_vecs.dim() == 3:
-                cand_list = cands[i]
-            cand_preds.append([cand_list[rank] for rank in ordering])
-        preds = [cand_preds[i][0] for i in range(batchsize)]
-        return Output(preds, cand_preds)
 
-    def update_metrics(self, total_loss, nb_ok, num_samples, dialog_round,
-                       med_rank=None):
+    def update_metrics(self, nb_ok, num_samples, dialog_round,
+                       med_rank=None, total_loss=None):
+        """
+            Update metrics to account for per-round retrieval statistics
+        """
         if dialog_round not in self.metrics:
             self.metrics[dialog_round] = {'accuracy': 0.0,
                                           'loss': 0.0,
                                           'num_samples': 0,
                                           'med_rank': []}
         self.metrics[dialog_round]['accuracy'] += nb_ok
-        self.metrics[dialog_round]['loss'] += total_loss
         self.metrics[dialog_round]['num_samples'] += num_samples
         if med_rank:
             self.metrics[dialog_round]['med_rank'] += med_rank
-
-    #########################################################################
-    #   This deals with the fine tuning. For some models, after a certain
-    #   time without improvement, we will release the weights
-    #   for fine tuning.
-    ########################################################################
+        if total_loss:
+            self.metrics[dialog_round]['loss'] += total_loss
 
     def receive_metrics(self, metrics_dict):
         """
-            Receives the metrics from valid.
-            release the weights of the pretrained encode after a certain number
+            Receives metrics from validation.
+            Unfreezes the weights of the pretrained encode after a certain number
             of rounds without improvement.
         """
         super().receive_metrics(metrics_dict)
@@ -347,33 +308,29 @@ class TransresnetAgent(TorchRankerAgent):
                     self.model.unfreeze_text_encoder()
                     print('Done')
 
-    #########################################################################
-    #   The following methods are there to report the evolution of the     #
-    #   model.                                                             #
-    ########################################################################
     def reset_metrics(self):
+        super().reset_metrics()
         for v in self.metrics.values():
-            v['accuracy'] = 0.0
-            v['loss'] = 0.0
-            v['num_samples'] = 0.0
-            if 'med_rank' in v:
-                v['med_rank'] = []
+            if type(v) is dict:
+                v['accuracy'] = 0.0
+                v['loss'] = 0.0
+                v['num_samples'] = 0.0
+                if 'med_rank' in v:
+                    v['med_rank'] = []
 
     def report(self):
-        m = {k: {} for k in self.metrics.keys()}
+        base = super().report()
+        m = {k: {} for k, v in self.metrics.items() if type(v) is dict}
         for k, v in self.metrics.items():
-            if v['num_samples'] > 0:
+            if type(v) is dict and v['num_samples'] > 0:
                 m[k]['accuracy'] = v['accuracy'] / v['num_samples']
                 m[k]['loss'] = v['loss'] / v['num_samples']
                 if 'med_rank' in v:
                     m[k]['med_rank'] = np.median(v['med_rank'])
                 for kk, vv in m[k].items():
                     m[k][kk] = round_sigfigs(vv, 4)
-        return m
-
-    ######################################
-    #  Serialization
-    ######################################
+        base.update(m)
+        return base
 
     def save(self, path=None):
         """
