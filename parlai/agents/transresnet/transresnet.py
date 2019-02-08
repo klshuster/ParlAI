@@ -51,7 +51,8 @@ class TransresnetAgent(TorchRankerAgent):
             embeddings_scale=False,
             attention_dropout=0.2,
             relu_dropout=0.2,
-            gradient_clip=-1
+            gradient_clip=-1,
+            truncate=64
         )
         arg_group = argparser.add_argument_group('TransResNetAgent Arguments')
         arg_group.add_argument('--freeze-patience', type=int, default=-1)
