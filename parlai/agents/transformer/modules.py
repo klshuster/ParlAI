@@ -233,7 +233,6 @@ class TransformerEncoder(nn.Module):
         if embedding is not None:
             self.embeddings = embedding
         else:
-            assert False
             assert padding_idx is not None
             self.embeddings = nn.Embedding(
                 vocabulary_size, embedding_size, padding_idx=padding_idx

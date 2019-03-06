@@ -66,7 +66,7 @@ class TransresnetAgent(TorchRankerAgent):
                                help='If specified, loads context encoder from file')
         arg_group.add_argument('--load-label-encoder-from', type=str, default=None,
                                help='If specified, loads label encoder from file')
-
+        arg_group.add_argument('--load-reddit', type='bool', default=False, help='load from reddit pretrained')
         model = argparser.add_argument_group('TransResNetModel Arguments')
         model.add_argument('--image-features-dim', type=int, default=2048)
         model.add_argument('--share-encoder', type='bool', default=False,

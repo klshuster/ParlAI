@@ -92,6 +92,9 @@ class TransResNetModel(nn.Module):
                 reduction=True)
 
     def build_encoders(self, dictionary):
+        if self.opt['load_reddit']:
+            self.load_from_reddit()
+            return
         embeddings = nn.Embedding(len(dictionary),
                                   self.opt['embedding_size'])
         kwargs = {
@@ -122,6 +125,50 @@ class TransResNetModel(nn.Module):
             self.opt['embedding_size'],
             self.opt['hidden_dim'],
             dropout=self.opt['dropout'])
+
+    def load_from_reddit(self):
+        reddit = torch.load('/private/home/kshuster/data/redditbest.mdl')
+
+        kwargs = {
+            'n_heads': reddit['transformer_n_heads'],
+            'n_layers': reddit['transformer_n_layers'],
+            'embedding_size': reddit['transformer_dim'],
+            'ffn_size': reddit['transformer_dim']*4,
+            'vocabulary_size': reddit['vocabulary_size'],
+            'attention_dropout': self.opt['attention_dropout'],
+            'relu_dropout': self.opt['relu_dropout'],
+            'padding_idx': reddit['padding_idx'],
+            'learn_positional_embeddings': self.opt.get('learn_positional_embeddings',
+                                                        False),
+            'embeddings_scale': self.opt['embeddings_scale'],
+            'reduction': True
+        }
+
+        states = reddit['transformer_state']
+        self.label_encoder = TransformerEncoder(**kwargs)
+        import pdb; pdb.set_trace()
+
+        transformed = {}
+        for k, v in list(states.items()):
+            k = k.replace('attentions.0', 'layers.0.attention')
+            k = k.replace('attentions.1', 'layers.1.attention')
+            k = k.replace('attentions.2', 'layers.2.attention')
+            k = k.replace('attentions.3', 'layers.3.attention')
+            k = k.replace('layer_norm1.0', 'layers.0.norm1')
+            k = k.replace('layer_norm1.1', 'layers.1.norm1')
+            k = k.replace('layer_norm1.2', 'layers.2.norm1')
+            k = k.replace('layer_norm1.3', 'layers.3.norm1')
+            k = k.replace('layer_norm2.0', 'layers.0.norm2')
+            k = k.replace('layer_norm2.1', 'layers.1.norm2')
+            k = k.replace('layer_norm2.2', 'layers.2.norm2')
+            k = k.replace('layer_norm2.3', 'layers.3.norm2')
+            k = k.replace('ffns.0', 'layers.0.ffn')
+            k = k.replace('ffns.1', 'layers.1.ffn')
+            k = k.replace('ffns.2', 'layers.2.ffn')
+            k = k.replace('ffns.3', 'layers.3.ffn')
+            transformed[k] = v
+        self.label_encoder.load_state_dict(states)
+
 
     def forward(self, batch, cands, cands_type='batch', train=False):
         """
