@@ -7,7 +7,7 @@
 from parlai.core.utils import round_sigfigs
 from parlai.core.torch_ranker_agent import TorchRankerAgent
 from parlai.agents.transformer import transformer as Transformer
-from .modules import TransResNetModel
+from .modules import TransResNetMultimodalModel
 
 import os
 from collections import namedtuple
@@ -24,7 +24,7 @@ Batch = namedtuple('Batch', ['text_vec', 'text_lengths', 'label_vec',
                    )
 
 
-class TransresnetAgent(TorchRankerAgent):
+class TransresnetMultimodalAgent(TorchRankerAgent):
     """
         Model described in (https://arxiv.org/abs/1811.00945); an extension
         of the one described in (https://arxiv.org/abs/1810.10665)
@@ -131,9 +131,9 @@ class TransresnetAgent(TorchRankerAgent):
         """
             Builds the Transresnet Model.
         """
-        self.model = TransResNetModel(self.opt,
-                                      self.personalities_list,
-                                      self.dict)
+        self.model = TransResNetMultimodalModel(self.opt,
+                                                self.personalities_list,
+                                                self.dict)
         if self.opt['load_label_encoder_from']:
             self._load_encoder(
                 self.model.label_encoder,

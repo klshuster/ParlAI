@@ -10,7 +10,7 @@ from parlai.agents.transformer.modules import TransformerEncoder, \
     create_position_codes, TransformerEncoderLayer
 
 
-class TransResNetModel(nn.Module):
+class TransResNetMultimodalModel(nn.Module):
     """
         Model for image dialog.
         There are two options for incorporating dialog history:
