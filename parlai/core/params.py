@@ -13,7 +13,10 @@ import json
 import sys as _sys
 import datetime
 import parlai
-import git
+try:
+  import git
+except:
+  pass
 
 from parlai.core.agents import get_agent_module, get_task_module
 from parlai.core.build_data import modelzoo_path
@@ -1073,3 +1076,4 @@ class ParlaiParser(argparse.ArgumentParser):
         self.print_help()
         _sys.stderr.write('\nParse Error: %s\n' % message)
         _sys.exit(2)
+
