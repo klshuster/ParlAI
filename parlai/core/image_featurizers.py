@@ -45,7 +45,8 @@ class ImageLoader:
                 self._init_resnext_cnn()
             else:
                 raise RuntimeError(
-                    'Image mode {} not supported'.format(self.image_mode)
+                    'Image mode {} not supported; please choose from {}'.format(
+                        self.image_mode, ['no_image_model', 'raw', 'ascii', 'resnet<>', 'resnext<>'])
                 )
 
     def _lazy_import_torch(self):
