@@ -8,7 +8,7 @@ Modules for ImageSeq2seqAgent Agent.
 """
 from enum import Enum
 from functools import reduce
-from typing import List, Tuple, Optional, Union
+from typing import List, Tuple, Optional, Union, Dict
 
 import torch
 import torch.nn as nn
@@ -16,6 +16,7 @@ import torch.nn as nn
 from parlai.agents.transformer.modules import (
     TransformerGeneratorModel,
     TransformerEncoder,
+    TransformerDecoder,
     _normalize,
 )
 from parlai.core.dict import DictionaryAgent
@@ -29,6 +30,38 @@ class FusionType(Enum):
 
     EARLY = 'early'
     LATE = 'late'
+
+
+def _add(tensors: List[Optional[torch.Tensor]]) -> torch.Tensor:
+    """
+    Handle addition of None tensors.
+
+    Smart addition. Adds tensors if they are not None.
+
+    :param tensors:
+        A list of torch.Tensor, with at least one non-null object
+
+    :return:
+        The result of adding all non-null objects in tensors
+    """
+    non_null_tensors: List[torch.Tensor] = [t for t in tensors if t is not None]
+    return reduce(lambda a, b: a + b, non_null_tensors)
+
+
+def _cat(tensors: List[Optional[torch.Tensor]]) -> torch.Tensor:
+    """
+    Handle concatenation of None tensors.
+
+    Smart concatenation. Concatenates tensors if they are not None.
+
+    :param tensors:
+        A list of torch.Tensor, with at least one non-null object
+
+    :return:
+        The result of concatenating all non-null objects in tensors
+    """
+    non_null_tensors: List[torch.Tensor] = [t for t in tensors if t is not None]
+    return torch.cat([t for t in non_null_tensors], dim=1)
 
 
 class ImageSeq2seqModel(TransformerGeneratorModel):
@@ -54,9 +87,19 @@ class ImageSeq2seqModel(TransformerGeneratorModel):
                 n_positions = 1024
 
         super().__init__(opt, dictionary)
+        n_enc_layers = (
+            opt['n_encoder_layers']
+            if opt.get('n_encoder_layers', -1) > 0
+            else opt['n_layers']
+        )
+        n_dec_layers = (
+            opt['n_decoder_layers']
+            if opt.get('n_decoder_layers', -1) > 0
+            else opt['n_layers']
+        )
         self.encoder = ContextWithImageEncoder(
             n_heads=opt['n_heads'],
-            n_layers=opt['n_layers'],
+            n_layers=n_enc_layers,
             embedding_size=opt['embedding_size'],
             ffn_size=opt['ffn_size'],
             vocabulary_size=len(dictionary),
@@ -77,6 +120,25 @@ class ImageSeq2seqModel(TransformerGeneratorModel):
             fusion=opt['image_fusion_type'],
             n_image_tokens=opt.get('n_image_tokens', 1),
             n_image_channels=opt.get('n_image_channels', 1),
+        )
+        self.decoder = ContextWithImageDecoder(
+            n_heads=opt['n_heads'],
+            n_layers=n_dec_layers,
+            embedding_size=opt['embedding_size'],
+            ffn_size=opt['ffn_size'],
+            vocabulary_size=len(dictionary),
+            embedding=self.embeddings,
+            dropout=opt['dropout'],
+            attention_dropout=opt['attention_dropout'],
+            relu_dropout=opt['relu_dropout'],
+            padding_idx=self.pad_idx,
+            learn_positional_embeddings=opt['learn_positional_embeddings'],
+            embeddings_scale=opt['embeddings_scale'],
+            n_positions=n_positions,
+            activation=opt['activation'],
+            variant=opt['variant'],
+            n_segments=opt.get('n_segments', 0),
+            decoder_fusion=opt['decoder_fusion']
         )
 
 
@@ -338,7 +400,7 @@ class ContextWithImageEncoder(TransformerEncoder):
             tensor = _normalize(tensor, self.norm_embeddings)
         # reduce output
         tensor, out_mask = self.reduce_output(tensor, mask)
-        return tensor, out_mask
+        return tensor, out_mask, image_tensor
 
     def _forward_late_fusion(
         self,
@@ -387,7 +449,7 @@ class ContextWithImageEncoder(TransformerEncoder):
                 full_enc=full_enc, full_mask=full_mask
             )
 
-        return full_enc, full_mask
+        return full_enc, full_mask, image_encoded
 
     def _add(self, tensors: List[Optional[torch.Tensor]]) -> torch.Tensor:
         """
@@ -454,3 +516,91 @@ class ContextWithImageEncoder(TransformerEncoder):
             full_enc = torch.cat([full_enc, enc_extension], dim=1)
             full_mask = torch.cat([full_mask, mask_extension], dim=1)
         return full_enc, full_mask
+
+
+class ContextWithImageDecoder(TransformerDecoder):
+    """
+    ContextWithImageDecoder.
+
+    Handles images during decoding.
+    """
+
+    def __init__(
+        self,
+        n_heads,
+        n_layers,
+        embedding_size,
+        ffn_size,
+        vocabulary_size,
+        embedding=None,
+        dropout=0.0,
+        attention_dropout=0.0,
+        relu_dropout=0.0,
+        embeddings_scale=True,
+        learn_positional_embeddings=False,
+        padding_idx=None,
+        n_positions=1024,
+        n_segments=0,
+        variant='aiayn',
+        activation='relu',
+        decoder_fusion=False
+    ):
+        super().__init__(
+            n_heads=n_heads,
+            n_layers=n_layers,
+            embedding_size=embedding_size,
+            ffn_size=ffn_size,
+            vocabulary_size=vocabulary_size,
+            embedding=embedding,
+            dropout=dropout,
+            attention_dropout=attention_dropout,
+            relu_dropout=relu_dropout,
+            padding_idx=padding_idx,
+            embeddings_scale=embeddings_scale,
+            learn_positional_embeddings=learn_positional_embeddings,
+            n_positions=n_positions,
+            activation=activation,
+            variant=variant,
+            n_segments=n_segments,
+        )
+        self.decoder_fusion = decoder_fusion
+
+    def forward(
+        self,
+        input: torch.LongTensor,
+        encoder_state: Tuple,
+        incr_state: Optional[Dict[str, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Override TransformerDecoder.forward to possibly attend over image features.
+        """
+        encoder_output, encoder_mask, image_tensor = encoder_state
+        if not self.decoder_fusion:
+            return super().forward(input, (encoder_output, encoder_mask), incr_state)
+        seq_len = input.size(1)
+        positions = input.new(seq_len).long()
+        positions = torch.arange(seq_len, out=positions).unsqueeze(0)
+
+        if incr_state is not None:
+            # We're doing incremental decoding, so select only the most recent position
+            input = input[:, -1:]
+            if positions is not None:
+                positions = positions[:, -1:]
+        else:
+            incr_state = {}
+
+        tensor = self.forward_embedding(input, positions)
+
+        tensor = self.dropout(tensor)  # --dropout
+
+        # include images
+        tensor = _add([image_tensor.sum(1, keepdim=True).repeat(1, tensor.size(1), 1), tensor])
+
+        tensor, new_incr_state = self.forward_layers(
+            tensor, encoder_output, encoder_mask, incr_state
+        )
+
+        if self.variant == 'prelayernorm':
+            tensor = _normalize(tensor, self.norm_embeddings)
+
+        return tensor, new_incr_state

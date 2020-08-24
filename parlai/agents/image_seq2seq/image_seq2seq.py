@@ -62,6 +62,12 @@ class ImageSeq2seqAgent(TransformerGeneratorAgent, TorchImageAgent):
             choices=[f.value for f in FusionType],
             help='which fusion type to use',
         )
+        group.add_argument(
+            '--decoder-fusion',
+            type='bool',
+            default=False,
+            help='Specify true to attend over image specifically during decoding'
+        )
         return group
 
     def build_dictionary(self) -> DictionaryAgent:
